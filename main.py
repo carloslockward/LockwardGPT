@@ -2,6 +2,7 @@ import json
 import openai
 import telebot
 from pathlib import Path
+from openai.error import RateLimitError
 from telebot.types import Message, BotCommand
 
 TELEGRAM_API_KEY = ""
@@ -178,7 +179,11 @@ class LockwardBot:
         msg = message.text
         chat_id = message.chat.id
 
-        response = self.chatgpt.chat(msg, chat_id, message.from_user.full_name)
+        try:
+            response = self.chatgpt.chat(msg, chat_id, message.from_user.full_name)
+        except RateLimitError:
+            self.bot.send_message(chat_id, "OpenAI servers are overloaded. Try again later.")
+            return
         if "```" in response:
             self.bot.send_message(chat_id, response, parse_mode="Markdown")
         else:
@@ -196,10 +201,13 @@ class LockwardBot:
 
     def start_listening(self):
         print("Bot started!")
-        try:
-            self.bot.polling()
-        except KeyboardInterrupt:
-            print("Bot is done!")
+        while True:
+            try:
+                self.bot.polling()
+            except KeyboardInterrupt:
+                print("Bot is done!")
+            except Exception as e:
+                print(f"Exception: {e} Restarting...\n\n")
 
 
 if __name__ == "__main__":
