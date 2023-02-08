@@ -206,6 +206,7 @@ class LockwardBot:
                 self.bot.polling()
             except KeyboardInterrupt:
                 print("Bot is done!")
+                break
             except Exception as e:
                 print(f"Exception: {e} Restarting...\n\n")
 
