@@ -1,6 +1,7 @@
 import json
 import openai
 import telebot
+from time import sleep
 from pathlib import Path
 from openai.error import RateLimitError
 from telebot.types import Message, BotCommand
@@ -27,19 +28,28 @@ class ChatGPT:
         if chat_id not in self.context.keys():
             self.context[chat_id] = []
         extra = f"You are talking to {talking_to}" if talking_to else ""
-        full_prompt = f"context: {' '.join(self.perma_context)} {extra} {' '.join(self.context[chat_id])} \n\n prompt: {prompt}<END>"
-        completion = openai.Completion.create(
-            engine=self.model_engine,
-            prompt=full_prompt,
-            max_tokens=self.max_tokens,
-            temperature=0.5,
-            top_p=1,
-            frequency_penalty=0,
-            presence_penalty=0,
-            stop="<END>",
-        )
 
-        response = completion.choices[0].text
+        if "<END>" in prompt:
+            prompt = prompt.replace("<END>", "")
+
+        for _ in range(3):
+            full_prompt = f"context: {' '.join(self.perma_context)} {extra} {' '.join(self.context[chat_id])} \n\n prompt: {prompt}<END>"
+            completion = openai.Completion.create(
+                engine=self.model_engine,
+                prompt=full_prompt,
+                max_tokens=self.max_tokens,
+                temperature=0.5,
+                top_p=1,
+                frequency_penalty=0,
+                presence_penalty=0,
+                stop="<END>",
+            )
+
+            response = completion.choices[0].text
+
+            if response.strip():
+                break
+            sleep(0.5)
 
         print(f"{talking_to.split(' ')[0] if talking_to else 'Prompt'}: {prompt}")
         print(f"ChatGPT: {response.strip()}")
@@ -64,7 +74,8 @@ class LockwardBot:
         self.chatgpt = chatgpt
         self.user_path = user_path
         self.commands = {
-            "test": {"func": self.__do_nothing, "desc": "Does nothing... Pretty lame right?"}
+            "test": {"func": self.__do_nothing, "desc": "Does nothing... Pretty lame right?"},
+            "context": {"func": self.get_context, "desc": "Gets the current context."},
         }
 
         self.admin_commands = {
@@ -105,6 +116,13 @@ class LockwardBot:
     def is_user_valid(self, username):
         # TODO: Actually validate the username using regex or something else.
         return True
+
+    def get_context(self, message: Message):
+        chat_id = message.chat.id
+
+        context = self.chatgpt.context.get(chat_id, ["Context is currently empty"])
+
+        self.bot.send_message(chat_id, f"Context: {' '.join(context)}")
 
     def grant_access(self, message: Message):
         self.users = self.get_users()
@@ -184,10 +202,11 @@ class LockwardBot:
         except RateLimitError:
             self.bot.send_message(chat_id, "OpenAI servers are overloaded. Try again later.")
             return
-        if "```" in response:
-            self.bot.send_message(chat_id, response, parse_mode="Markdown")
-        else:
-            self.bot.send_message(chat_id, response)
+        if response:
+            if "```" in response:
+                self.bot.send_message(chat_id, response, parse_mode="Markdown")
+            else:
+                self.bot.send_message(chat_id, response)
 
     def handle_msg(self, message: Message):
         if message.from_user.username in self.users["users"]:
@@ -201,17 +220,19 @@ class LockwardBot:
 
     def start_listening(self):
         print("Bot started!")
-        while True:
-            try:
-                self.bot.polling()
-            except KeyboardInterrupt:
-                print("Bot is done!")
-                break
-            except Exception as e:
-                print(f"Exception: {e} Restarting...\n\n")
+        self.bot.infinity_polling()
 
 
 if __name__ == "__main__":
-    chatgpt = ChatGPT(OPENAI_API_KEY)
-    bot = LockwardBot(chatgpt, TELEGRAM_API_KEY)
-    bot.start_listening()
+    while True:
+        try:
+            chatgpt = ChatGPT(OPENAI_API_KEY)
+            bot = LockwardBot(chatgpt, TELEGRAM_API_KEY)
+            bot.start_listening()
+            print("Bot is done!")
+            break
+        except KeyboardInterrupt:
+            print("Bot is done!")
+            break
+        except Exception as e:
+            print(f"Exception {e}. Restarting...")
