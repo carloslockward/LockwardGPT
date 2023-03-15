@@ -12,7 +12,7 @@ OPENAI_API_KEY = ""
 
 class ChatGPT:
     def __init__(
-        self, api_key, model_engine="text-davinci-003", max_tokens=1024, context_size=4
+        self, api_key, model_engine="gpt-3.5-turbo", max_tokens=1024, context_size=4
     ) -> None:
         self.max_tokens = max_tokens
         self.model_engine = model_engine
@@ -29,41 +29,41 @@ class ChatGPT:
             self.context[chat_id] = []
         extra = f"You are talking to {talking_to}" if talking_to else ""
 
-        if "<END>" in prompt:
-            prompt = prompt.replace("<END>", "")
+        messages = (
+            [{"role": "system", "content": f"{' '.join(self.perma_context)} {extra}"}]
+            + self.context[chat_id]
+            + [{"role": "user", "content": prompt}]
+        )
 
         for _ in range(3):
-            full_prompt = f"context: {' '.join(self.perma_context)} {extra} {' '.join(self.context[chat_id])} \n\n prompt: {prompt}<END>"
-            completion = openai.Completion.create(
-                engine=self.model_engine,
-                prompt=full_prompt,
+            completion = openai.ChatCompletion.create(
+                model=self.model_engine,
+                messages=messages,
                 max_tokens=self.max_tokens,
                 temperature=0.5,
                 top_p=1,
                 frequency_penalty=0,
                 presence_penalty=0,
-                stop="<END>",
             )
 
-            response = completion.choices[0].text
-
-            if response.strip():
+            response = completion.choices[0].get("message")
+            if response:
                 break
             sleep(0.5)
 
-        print(f"{talking_to.split(' ')[0] if talking_to else 'Prompt'}: {prompt}")
-        print(f"ChatGPT: {response.strip()}")
-        print(f"Context: {' '.join(self.context[chat_id])}")
-
         if response:
+
+            print(f"{talking_to.split(' ')[0] if talking_to else 'Prompt'}: {prompt}")
+            print(f"ChatGPT: {response['content']}")
+
             # Remove old context
             for _ in range(min(len(self.context[chat_id]) - (self.context_size - 2), 0)):
                 self.context[chat_id].pop(0)
 
-            self.context[chat_id].append(prompt)
+            self.context[chat_id].append({"role": "user", "content": prompt})
             self.context[chat_id].append(response)
 
-        return response
+        return response["content"]
 
 
 class LockwardBot:
