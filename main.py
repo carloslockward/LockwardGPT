@@ -120,9 +120,22 @@ class LockwardBot:
     def get_context(self, message: Message):
         chat_id = message.chat.id
 
-        context = self.chatgpt.context.get(chat_id, ["Context is currently empty"])
+        context = self.chatgpt.context.get(chat_id)
 
-        self.bot.send_message(chat_id, f"Context: {' '.join(context)}")
+        if context is None:
+            self.bot.send_message(chat_id, f"Context is currently empty")
+            return
+
+        full_context = ""
+        for msg in context:
+            full_context += (
+                "\n"
+                + ("LockwardGPT" if msg["role"] == "assistant" else message.from_user.full_name)
+                + ": "
+                + msg["content"]
+            )
+
+        self.bot.send_message(chat_id, f"Context: {full_context}")
 
     def grant_access(self, message: Message):
         self.users = self.get_users()
