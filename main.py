@@ -11,9 +11,7 @@ OPENAI_API_KEY = ""
 
 
 class ChatGPT:
-    def __init__(
-        self, api_key, model_engine="gpt-3.5-turbo", max_tokens=1024, context_size=4
-    ) -> None:
+    def __init__(self, api_key, model_engine="gpt-4", max_tokens=1024, context_size=4) -> None:
         self.max_tokens = max_tokens
         self.model_engine = model_engine
         self.context = {}
@@ -295,6 +293,7 @@ class LockwardBot:
         msg = msg.replace("/image", "").strip()
 
         if msg:
+            self.bot.send_chat_action(chat_id=chat_id, action="upload_photo")
             try:
                 image_url = self.chatgpt.image(msg)
             except Exception as e:
@@ -345,6 +344,7 @@ class LockwardBot:
         msg = message.text
         chat_id = message.chat.id
 
+        self.bot.send_chat_action(chat_id=chat_id, action="typing")
         try:
             response = self.chatgpt.chat(msg, chat_id, message.from_user.full_name)
         except RateLimitError:
