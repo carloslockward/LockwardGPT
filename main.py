@@ -1,6 +1,7 @@
 import json
 import openai
 import telebot
+import traceback
 from time import sleep
 from pathlib import Path
 from openai.error import RateLimitError
@@ -231,7 +232,7 @@ class LockwardBot:
                 ex = e
             sleep(0.5)
         if ex is not None:
-            raise e
+            raise ex
 
     def grant_access(self, message: Message):
         self.users = self.get_users()
@@ -249,7 +250,10 @@ class LockwardBot:
                     self.send_message_bot(chat_id, f"User @{clean_user} already had access!")
         if save:
             self.save_users()
-            self.send_message_bot(chat_id, f"Granted access to user @{clean_user}")
+            if len(users_list) > 1:
+                self.send_message_bot(chat_id, f"Granted access to {len(users_list)} users")
+            else:
+                self.send_message_bot(chat_id, f"Granted access to user @{clean_user}")
 
     def revoke_access(self, message: Message):
         self.users = self.get_users()
@@ -350,6 +354,13 @@ class LockwardBot:
         except RateLimitError:
             self.send_message_bot(chat_id, "OpenAI servers are overloaded. Try again later.")
             return
+        except Exception:
+            if message.from_user.username in self.admins:
+                self.send_message_bot(
+                    chat_id,
+                    f"An error has occurred: Exception:\n```{traceback.format_exc()}```",
+                    parse_mode="Markdown",
+                )
         if response:
             if "```" in response:
                 self.send_message_bot(chat_id, response, parse_mode="Markdown")
