@@ -36,28 +36,18 @@ class ChatGPT:
             full_content += i["content"] + " "
 
         full_content = full_content.strip()
-        return self.__count_tokens(full_content)
+        return self.__count_tokens(full_content) * 2
 
-    def __trim_messages(self, messages, rm_num=300):
-        rm_num = int(rm_num)
-        rm_count = 0
-        res = []
-        for i in messages:
-            if rm_count < rm_num:
-                if i["role"] != "system":
-                    tokens = i["content"].split()
-                    if len(tokens) > rm_num:
-                        res.append({"role": i["role"], "content": i["content"][rm_num:]})
-                        rm_count = rm_num
-                    elif len(tokens) == rm_num:
-                        rm_count = rm_num
-                    else:
-                        rm_count = len(tokens)
-                else:
-                    res.append(i)
+    def __trim_messages(self, messages: list, trim_to):
+        trim_to = int(trim_to)
+        res = messages.copy()
+        while True:
+            if len(res) >= 2:
+                res.pop(1)
+                if self.__count_tokens_in_messages(res) <= trim_to:
+                    return res
             else:
-                res.append(i)
-        return res
+                return res
 
     def image(self, prompt: str):
         response = openai.Image.create(
@@ -78,9 +68,9 @@ class ChatGPT:
 
         num_tokens = self.__count_tokens_in_messages(messages)
 
-        if num_tokens * 2 > 4097.0:
+        if num_tokens > 4097.0:
             print("!! Message too long. Trimming... !!")
-            messages = self.__trim_messages(messages, (num_tokens * 2) - 4097.0)
+            messages = self.__trim_messages(messages, 4097.0)
 
         for _ in range(3):
             completion = openai.ChatCompletion.create(
@@ -204,7 +194,7 @@ class LockwardBot:
                 new_text = ""
                 if len(args) == 2:
                     if len(args[1]) > 4096:
-                        new_text = args.pop(1)
+                        new_text = args[1]
                 if "text" in kwargs.keys():
                     if len(kwargs["text"]) > 4096:
                         new_text = kwargs.pop("text")
@@ -213,13 +203,14 @@ class LockwardBot:
                     start_block = False
                     last = None
                     for t in self.__split_string(new_text):
-                        if start_block:
-                            t = "```" + t
-                            start_block = False
-                        else:
-                            if t.count("```") % 2 != 0:
-                                t += "```"
-                                start_block = True
+                        if "```" in new_text:
+                            if start_block:
+                                t = "```" + t
+                                start_block = False
+                            else:
+                                if t.count("```") % 2 != 0:
+                                    t += "```"
+                                    start_block = True
 
                         kwargs["text"] = t
                         last = self.bot.send_message(*args, **kwargs)
@@ -361,8 +352,13 @@ class LockwardBot:
                     f"An error has occurred: Exception:\n```{traceback.format_exc()}```",
                     parse_mode="Markdown",
                 )
+            else:
+                self.send_message_bot(
+                    chat_id, f"An error has occurred. Try clearing the context and try again."
+                )
+            return
         if response:
-            if "```" in response:
+            if response.count("`") % 2 == 0:
                 self.send_message_bot(chat_id, response, parse_mode="Markdown")
             else:
                 self.send_message_bot(chat_id, response)
