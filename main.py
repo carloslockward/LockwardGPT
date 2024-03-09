@@ -1,10 +1,11 @@
 import json
 import openai
 import telebot
+import tiktoken
 import traceback
 from time import sleep
 from pathlib import Path
-from openai.error import RateLimitError
+from openai import RateLimitError
 from telebot.types import Message, BotCommand, BotCommandScopeChat
 
 TELEGRAM_API_KEY = ""
@@ -12,48 +13,52 @@ OPENAI_API_KEY = ""
 
 
 class ChatGPT:
-    def __init__(self, api_key, model_engine="gpt-4", max_tokens=1024, context_size=4) -> None:
+    def __init__(self, api_key, model_engine="gpt-4", max_tokens=2048, context_size=4) -> None:
         self.max_tokens = max_tokens
         self.model_engine = model_engine
         self.context = {}
         self.perma_context = [
             "You are LockwardGPT, Carlos Fernandez's personal AI",
             "If asked for code you return it in markdown code block format",
+            "If asked to generate an image in any way you will respond with 'IMAGE_REQUESTED_123' followed by the promt",
             "You always try to keep your answers as short and concise as possible unless asked otherwise",
         ]
         self.context_size = context_size
-        self.image_size = 512
-        openai.api_key = api_key
+        self.image_size = 1024
+        self.openai_client = openai.OpenAI(api_key=api_key)
 
-    def __count_tokens(self, text):
-        tokens = text.split()  # split the string into tokens
-        num_tokens = len(tokens)  # count the number of tokens
+    def count_tokens_in_messages(self, messages):
+        encoding = tiktoken.get_encoding("cl100k_base")
+        num_tokens = 0
+        for message in messages:
+            num_tokens += 4  # every message follows <im_start>{role/name}\n{content}<im_end>\n
+            for key, value in message.items():
+                num_tokens += len(encoding.encode(value))
+                if key == "name":  # if there's a name, the role is omitted
+                    num_tokens += -1  # role is always required and always 1 token
+        num_tokens += 2  # every reply is primed with <im_start>assistant
         return num_tokens
-
-    def __count_tokens_in_messages(self, messages):
-        full_content = ""
-        for i in messages:
-            full_content += i["content"] + " "
-
-        full_content = full_content.strip()
-        return self.__count_tokens(full_content) * 2
 
     def __trim_messages(self, messages: list, trim_to):
         trim_to = int(trim_to)
         res = messages.copy()
         while True:
-            if len(res) >= 2:
+            if len(res) > 2:
                 res.pop(1)
-                if self.__count_tokens_in_messages(res) <= trim_to:
+                if self.count_tokens_in_messages(res) <= trim_to:
                     return res
             else:
                 return res
 
     def image(self, prompt: str):
-        response = openai.Image.create(
-            prompt=prompt, n=1, size=f"{self.image_size}x{self.image_size}"
+        response = self.openai_client.images.generate(
+            model="dall-e-3",
+            prompt=prompt,
+            n=1,
+            size=f"{self.image_size}x{self.image_size}",
+            quality="hd",
         )
-        return response["data"][0]["url"]
+        return response.data[0].url
 
     def chat(self, prompt: str, chat_id, talking_to=None):
         if chat_id not in self.context.keys():
@@ -66,41 +71,54 @@ class ChatGPT:
             + [{"role": "user", "content": prompt}]
         )
 
-        num_tokens = self.__count_tokens_in_messages(messages)
+        num_tokens = self.count_tokens_in_messages(messages)
 
-        if num_tokens > 4097.0:
+        local_max_tokens = self.max_tokens
+
+        if num_tokens > 2048:
             print("!! Message too long. Trimming... !!")
-            messages = self.__trim_messages(messages, 4097.0)
+            messages = self.__trim_messages(messages, 2048)
+
+            new_num_tokens = self.count_tokens_in_messages(messages)
+
+            if new_num_tokens > 2048:
+                local_max_tokens = 4096 - new_num_tokens
 
         for _ in range(3):
-            completion = openai.ChatCompletion.create(
+            completion = self.openai_client.chat.completions.create(
                 model=self.model_engine,
                 messages=messages,
-                max_tokens=self.max_tokens,
+                max_tokens=local_max_tokens,
                 temperature=0.6,
-                top_p=1,
-                frequency_penalty=0,
-                presence_penalty=0,
+                frequency_penalty=0.1,
+                presence_penalty=0.1,
                 timeout=60,
             )
-
-            response = completion.choices[0].get("message")
+            response = completion.choices[0].message
+            usage = completion.usage.total_tokens
             if response:
                 break
             sleep(0.5)
 
         if response:
             print(f"{talking_to.split(' ')[0] if talking_to else 'Prompt'}: {prompt}")
-            print(f"ChatGPT: {response['content']}")
+            print(f"ChatGPT: {response.content}")
 
             # Remove old context
             for _ in range(min(len(self.context[chat_id]) - (self.context_size - 2), 0)):
                 self.context[chat_id].pop(0)
 
             self.context[chat_id].append({"role": "user", "content": prompt})
-            self.context[chat_id].append(response)
+            self.context[chat_id].append({"role": "assistant", "content": response.content})
 
-        return response["content"]
+        return response.content, usage
+
+
+class CustomMessage:
+    def __init__(self, text, chat, from_user):
+        self.chat = chat
+        self.text = text
+        self.from_user = from_user
 
 
 class LockwardBot:
@@ -110,8 +128,14 @@ class LockwardBot:
         self.callback = {}
         self.chatgpt = chatgpt
         self.user_path = user_path
+        self.token_usage = {}
+        self.image_usage = {}
         self.commands = {
             "context": {"func": self.get_context, "desc": "Gets the current context."},
+            "context_length": {
+                "func": self.get_context_length,
+                "desc": "Gets the current context length.",
+            },
             "clear_context": {"func": self.clear_context, "desc": "Clears the current context."},
             "image": {
                 "func": self.generate_image,
@@ -131,6 +155,14 @@ class LockwardBot:
             "list_users": {
                 "func": self.list_users,
                 "desc": "Lists current allowed users. (Admin Only)",
+            },
+            "token_usage": {
+                "func": self.get_token_usage,
+                "desc": "Get general token usage by username",
+            },
+            "image_usage": {
+                "func": self.get_image_usage,
+                "desc": "Get general image usage by username",
             },
         }
 
@@ -281,9 +313,44 @@ class LockwardBot:
 
         self.send_message_bot(chat_id, "Context has been cleared!")
 
+    def get_context_length(self, message: Message):
+        chat_id = message.chat.id
+        num_tokens = 0
+        if chat_id in self.chatgpt.context.keys():
+            num_tokens = self.chatgpt.count_tokens_in_messages(self.chatgpt.context[chat_id])
+
+        self.send_message_bot(chat_id, f"Your context is {num_tokens} tokens long.")
+
+    def get_token_usage(self, message: Message):
+        chat_id = message.chat.id
+        if len(self.token_usage) > 0:
+            res = "Token usage per Username:\n"
+            for username, num_tokens in sorted(
+                self.token_usage.items(), key=lambda item: item[1], reverse=True
+            ):
+                res += f"@{username}: {num_tokens}\n"
+
+            self.send_message_bot(chat_id, res.strip())
+        else:
+            self.send_message_bot(chat_id, "No token usage so far...")
+
+    def get_image_usage(self, message: Message):
+        chat_id = message.chat.id
+        if len(self.image_usage) > 0:
+            res = "Number of images generated per Username:\n"
+            for username, num_images in sorted(
+                self.image_usage.items(), key=lambda item: item[1], reverse=True
+            ):
+                res += f"@{username}: {num_images}\n"
+
+            self.send_message_bot(chat_id, res.strip())
+        else:
+            self.send_message_bot(chat_id, "No image usage so far...")
+
     def generate_image(self, message: Message):
         msg = message.text
         chat_id = message.chat.id
+        username = message.from_user.username
 
         msg = msg.replace("/image", "").strip()
 
@@ -291,22 +358,44 @@ class LockwardBot:
             self.bot.send_chat_action(chat_id=chat_id, action="upload_photo")
             try:
                 image_url = self.chatgpt.image(msg)
+                print(f"Image Generated! Prompt: '{msg}'")
             except Exception as e:
-                if "safety system" in str(e):
+                if "safety system" in str(e) or "content filters" in str(e):
                     self.send_message_bot(
                         chat_id,
-                        "This image can't be generated because of OpenAI's safety system.",
+                        "This image can't be generated because of OpenAI's safety systems.",
                     )
                     return
                 else:
-                    raise e
+                    if username in self.admins:
+                        try:
+                            self.send_message_bot(
+                                chat_id,
+                                f"An error has occurred: Exception:\n```{traceback.format_exc()}```",
+                                parse_mode="Markdown",
+                            )
+                        except Exception as e:
+                            if "can't parse" in str(e):
+                                self.send_message_bot(
+                                    chat_id,
+                                    f"An error has occurred: Exception:\n```{traceback.format_exc()}```",
+                                )
+                    else:
+                        self.send_message_bot(
+                            chat_id,
+                            f"An error has occurred. Try clearing the context and try again. If the issue persists contact @carloslockward",
+                        )
+                        raise e
             if image_url:
+                if username not in self.image_usage.keys():
+                    self.image_usage[username] = 0
+                self.image_usage[username] += 1
                 self.bot.send_photo(chat_id, photo=image_url)
         else:
             self.send_message_bot(
                 chat_id,
-                "You must provide a prompt. Usage:\n `/image <prompt>`",
-                parse_mode="Markdown",
+                "You must provide a prompt\. Usage:\n `/image <prompt>`",
+                parse_mode="MarkdownV2",
             )
 
     def get_users(self):
@@ -318,6 +407,12 @@ class LockwardBot:
             pass
         return users
 
+    def command_not_found(self, message: Message):
+        msg = message.text.strip()
+        chat_id = message.chat.id
+        self.bot.send_chat_action(chat_id=chat_id, action="typing")
+        self.send_message_bot(chat_id, f"Command {msg.split()[0]} is invalid")
+
     def determine_function(self, message: Message):
         if message.content_type == "text":
             msg = message.text.strip()
@@ -325,43 +420,95 @@ class LockwardBot:
             # Handle messages with commands.
             if msg.startswith("/"):
                 for cmd, cmd_info in self.commands.items():
-                    if f"/{cmd}" in msg:
+                    if msg.split()[0] == f"/{cmd}":
                         return cmd_info["func"]
 
                 if message.from_user.username in self.admins:
                     for cmd, cmd_info in self.admin_commands.items():
-                        if f"/{cmd}" in msg:
+                        if msg.split()[0] == f"/{cmd}":
                             return cmd_info["func"]
+                return self.command_not_found
             # Handle generic messages
             return self.chat
 
     def chat(self, message: Message):
         msg = message.text
         chat_id = message.chat.id
+        username = message.from_user.username
 
+        # TODO: This only lasts 5 seconds, should find a way of making it last as long as the promt completion
         self.bot.send_chat_action(chat_id=chat_id, action="typing")
         try:
-            response = self.chatgpt.chat(msg, chat_id, message.from_user.full_name)
-        except RateLimitError:
-            self.send_message_bot(chat_id, "OpenAI servers are overloaded. Try again later.")
-            return
-        except Exception:
+            response, usage = self.chatgpt.chat(msg, chat_id, message.from_user.full_name)
+            if username not in self.token_usage.keys():
+                self.token_usage[username] = 0
+            self.token_usage[username] += usage
+        except RateLimitError as rle:
+            exception_text = traceback.format_exc()
             if message.from_user.username in self.admins:
                 self.send_message_bot(
                     chat_id,
-                    f"An error has occurred: Exception:\n```{traceback.format_exc()}```",
+                    f"OpenAI servers are overloaded. Try again later. \nException:\n```{exception_text}```",
                     parse_mode="Markdown",
                 )
             else:
+                if "insufficient_quota" in exception_text:
+                    self.send_message_bot(
+                        chat_id, "LockwardGPT is unavailable at the moment. Try again later."
+                    )
+                else:
+                    self.send_message_bot(
+                        chat_id, f"OpenAI servers are overloaded. Try again later."
+                    )
+            return
+        except Exception as e:
+            if message.from_user.username in self.admins:
+                try:
+                    self.send_message_bot(
+                        chat_id,
+                        f"An error has occurred: Exception:\n```{traceback.format_exc()}```",
+                        parse_mode="Markdown",
+                    )
+                except Exception as e:
+                    if "can't parse" in str(e):
+                        self.send_message_bot(
+                            chat_id,
+                            f"An error has occurred: Exception:\n```{traceback.format_exc()}```",
+                        )
+            else:
                 self.send_message_bot(
-                    chat_id, f"An error has occurred. Try clearing the context and try again."
+                    chat_id,
+                    f"An error has occurred. Try clearing the context and try again. If the issue persists contact @carloslockward",
                 )
+                raise e
             return
         if response:
-            if response.count("`") % 2 == 0:
-                self.send_message_bot(chat_id, response, parse_mode="Markdown")
+            if "IMAGE_REQUESTED_123" in response:
+                self.generate_image(
+                    CustomMessage(
+                        response.replace("IMAGE_REQUESTED_123:", ""),
+                        message.chat,
+                        message.from_user,
+                    )
+                )
             else:
-                self.send_message_bot(chat_id, response)
+                try:
+                    self.send_message_bot(
+                        chat_id, response.replace(".", "\."), parse_mode="MarkdownV2"
+                    )
+                except Exception as e:
+                    if "can't parse" in str(e):
+                        try:
+                            print("!! Couldn't parse Markdown V2 !!")
+                            self.send_message_bot(chat_id, response, parse_mode="Markdown")
+                        except Exception as e2:
+                            if "can't parse" in str(e2):
+                                print("!! Couldn't parse Markdown !!")
+                                self.send_message_bot(chat_id, response)
+                            else:
+                                raise e2
+                    else:
+                        raise e
 
     def handle_msg(self, message: Message):
         if not self.init_admin_cmds and message.from_user.username in self.admins:
@@ -387,7 +534,7 @@ class LockwardBot:
 if __name__ == "__main__":
     while True:
         try:
-            chatgpt = ChatGPT(OPENAI_API_KEY)
+            chatgpt = ChatGPT(OPENAI_API_KEY, context_size=10)
             bot = LockwardBot(chatgpt, TELEGRAM_API_KEY)
             bot.start_listening()
             print("Bot is done!")
