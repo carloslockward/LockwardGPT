@@ -13,14 +13,16 @@ OPENAI_API_KEY = ""
 
 
 class ChatGPT:
-    def __init__(self, api_key, model_engine="gpt-4", max_tokens=2048, context_size=4) -> None:
+    def __init__(
+        self, api_key, model_engine="gpt-4", max_tokens=2048, context={}, context_size=4
+    ) -> None:
         self.max_tokens = max_tokens
         self.model_engine = model_engine
-        self.context = {}
+        self.context = context
         self.perma_context = [
             "You are LockwardGPT, Carlos Fernandez's personal AI",
             "If asked for code you return it in markdown code block format",
-            "If asked to generate an image in any way you will respond with 'IMAGE_REQUESTED_123' followed by the promt",
+            "If asked to generate an image in any way, you will respond with 'IMAGE_REQUESTED_123' followed by the prompt. This will automatically trigger an API call to DALL-E 3, effectively allowing you to generate images directly."
             "You always try to keep your answers as short and concise as possible unless asked otherwise",
         ]
         self.context_size = context_size
@@ -80,9 +82,12 @@ class ChatGPT:
             messages = self.__trim_messages(messages, 2048)
 
             new_num_tokens = self.count_tokens_in_messages(messages)
+            print(f"Old tokens: {num_tokens}. New tokens: {new_num_tokens}")
 
+            # If after trimming message is still too long, lets remove some tokens from the response to make room.
             if new_num_tokens > 2048:
                 local_max_tokens = 4096 - new_num_tokens
+                print(f"Had to reduce response length! Max response tokens: {local_max_tokens}")
 
         for _ in range(3):
             completion = self.openai_client.chat.completions.create(
@@ -199,7 +204,7 @@ class LockwardBot:
     def get_context(self, message: Message):
         chat_id = message.chat.id
 
-        context = self.chatgpt.context.get(chat_id)
+        context = self.chatgpt.context.get(str(chat_id))
 
         if context is None or len(context) == 0:
             self.send_message_bot(chat_id, f"Context is currently empty")
@@ -216,7 +221,7 @@ class LockwardBot:
 
         self.send_message_bot(chat_id, f"Context: {full_context}")
 
-    def __split_string(self, string: str, max_length=4096) -> list[str]:
+    def __split_string(self, string: str, max_length=4090) -> list[str]:
         return [string[i : i + max_length] for i in range(0, len(string), max_length)]
 
     def send_message_bot(self, *args, **kwargs):
@@ -224,14 +229,14 @@ class LockwardBot:
         for _ in range(5):
             try:
                 new_text = ""
-                if len(args) == 2:
+                if len(args) >= 2:
                     if len(args[1]) > 4096:
                         new_text = args[1]
-                if "text" in kwargs.keys():
+                elif "text" in kwargs.keys():
                     if len(kwargs["text"]) > 4096:
-                        new_text = kwargs.pop("text")
+                        new_text = kwargs["text"]
 
-                if new_text != "":
+                if new_text:
                     start_block = False
                     last = None
                     for t in self.__split_string(new_text):
@@ -239,20 +244,27 @@ class LockwardBot:
                             if start_block:
                                 t = "```" + t
                                 start_block = False
-                            else:
-                                if t.count("```") % 2 != 0:
-                                    t += "```"
-                                    start_block = True
-
-                        kwargs["text"] = t
-                        last = self.bot.send_message(*args, **kwargs)
+                            if t.count("```") % 2 != 0:
+                                t += "```"
+                                start_block = True
+                        new_args = list(args)
+                        if "text" in kwargs.keys():
+                            kwargs["text"] = t
+                        else:
+                            new_args[1] = t
+                        last = self.bot.send_message(*new_args, **kwargs)
                     return last
 
                 else:
                     return self.bot.send_message(*args, **kwargs)
 
             except Exception as e:
-                ex = e
+                if "can't parse" in str(e):
+                    raise e
+                elif "message is too long" in str(e):
+                    raise e
+                else:
+                    ex = e
             sleep(0.5)
         if ex is not None:
             raise ex
@@ -308,16 +320,16 @@ class LockwardBot:
     def clear_context(self, message: Message):
         chat_id = message.chat.id
 
-        if chat_id in self.chatgpt.context.keys():
-            self.chatgpt.context[chat_id] = []
+        if str(chat_id) in self.chatgpt.context.keys():
+            self.chatgpt.context[str(chat_id)] = []
 
         self.send_message_bot(chat_id, "Context has been cleared!")
 
     def get_context_length(self, message: Message):
         chat_id = message.chat.id
         num_tokens = 0
-        if chat_id in self.chatgpt.context.keys():
-            num_tokens = self.chatgpt.count_tokens_in_messages(self.chatgpt.context[chat_id])
+        if str(chat_id) in self.chatgpt.context.keys():
+            num_tokens = self.chatgpt.count_tokens_in_messages(self.chatgpt.context[str(chat_id)])
 
         self.send_message_bot(chat_id, f"Your context is {num_tokens} tokens long.")
 
@@ -439,7 +451,7 @@ class LockwardBot:
         # TODO: This only lasts 5 seconds, should find a way of making it last as long as the promt completion
         self.bot.send_chat_action(chat_id=chat_id, action="typing")
         try:
-            response, usage = self.chatgpt.chat(msg, chat_id, message.from_user.full_name)
+            response, usage = self.chatgpt.chat(msg, str(chat_id), message.from_user.full_name)
             if username not in self.token_usage.keys():
                 self.token_usage[username] = 0
             self.token_usage[username] += usage
@@ -483,7 +495,7 @@ class LockwardBot:
                 raise e
             return
         if response:
-            if "IMAGE_REQUESTED_123" in response:
+            if response.startswith("IMAGE_REQUESTED_123"):
                 self.generate_image(
                     CustomMessage(
                         response.replace("IMAGE_REQUESTED_123:", ""),
@@ -511,18 +523,20 @@ class LockwardBot:
                         raise e
 
     def handle_msg(self, message: Message):
-        if not self.init_admin_cmds and message.from_user.username in self.admins:
+        username = message.from_user.username
+        chat_id = message.chat.id
+        if not self.init_admin_cmds and username in self.admins:
             self.bot.set_my_commands(
                 self.admin_command_list + self.command_list,
-                scope=BotCommandScopeChat(message.chat.id),
+                scope=BotCommandScopeChat(chat_id),
             )
             self.init_admin_cmds = True
-        if message.from_user.username in self.users["users"]:
+        if username in self.users["users"]:
             func = self.determine_function(message)
             func(message)
         else:
             self.send_message_bot(
-                message.chat.id,
+                chat_id,
                 "You dont have access to LockwardGPT. Ask @carloslockward to grant you access.",
             )
 
@@ -534,7 +548,14 @@ class LockwardBot:
 if __name__ == "__main__":
     while True:
         try:
-            chatgpt = ChatGPT(OPENAI_API_KEY, context_size=10)
+            context = {}
+            if Path("context.json").exists():
+                try:
+                    with Path("context.json").open("r") as cf:
+                        context = json.load(cf)
+                except:
+                    print(f"Failed to load context! Exception:\n {traceback.format_exc()}")
+            chatgpt = ChatGPT(OPENAI_API_KEY, context=context, context_size=10)
             bot = LockwardBot(chatgpt, TELEGRAM_API_KEY)
             bot.start_listening()
             print("Bot is done!")
@@ -544,3 +565,10 @@ if __name__ == "__main__":
             break
         except Exception as e:
             print(f"Exception {e}. Restarting...")
+        finally:
+            try:
+                print("Saving context...")
+                with Path("context.json").open("w") as cf:
+                    json.dump(chatgpt.context, cf)
+            except:
+                print(f"Failed to save context! Exception:\n {traceback.format_exc()}")
