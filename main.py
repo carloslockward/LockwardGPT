@@ -333,7 +333,7 @@ class LockwardBot:
         chat_id = message.chat.id
         num_tokens = 0
         if str(chat_id) in self.chatgpt.context.keys():
-            num_tokens = self.chatgpt.count_tokens_in_messages(self.chatgpt.context[str(chat_id)])
+            num_tokens = count_tokens_in_messages(self.chatgpt.context[str(chat_id)])
 
         self.send_message_bot(chat_id, f"Your context is {num_tokens} tokens long.")
 
@@ -456,7 +456,7 @@ class LockwardBot:
             if message.caption:
                 msg = message.caption
             else:
-                msg = ''
+                msg = ""
         else:
             msg = message.text
         chat_id = message.chat.id
