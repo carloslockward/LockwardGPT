@@ -1,8 +1,9 @@
 import json
+import base64
 import openai
 import telebot
-import tiktoken
 import traceback
+from utils import *
 from time import sleep
 from pathlib import Path
 from openai import RateLimitError
@@ -14,7 +15,7 @@ OPENAI_API_KEY = ""
 
 class ChatGPT:
     def __init__(
-        self, api_key, model_engine="gpt-4", max_tokens=2048, context={}, context_size=4
+        self, api_key, model_engine="gpt-4-turbo", max_tokens=2048, context={}, context_size=4
     ) -> None:
         self.max_tokens = max_tokens
         self.model_engine = model_engine
@@ -29,25 +30,13 @@ class ChatGPT:
         self.image_size = 1024
         self.openai_client = openai.OpenAI(api_key=api_key)
 
-    def count_tokens_in_messages(self, messages):
-        encoding = tiktoken.get_encoding("cl100k_base")
-        num_tokens = 0
-        for message in messages:
-            num_tokens += 4  # every message follows <im_start>{role/name}\n{content}<im_end>\n
-            for key, value in message.items():
-                num_tokens += len(encoding.encode(value))
-                if key == "name":  # if there's a name, the role is omitted
-                    num_tokens += -1  # role is always required and always 1 token
-        num_tokens += 2  # every reply is primed with <im_start>assistant
-        return num_tokens
-
     def __trim_messages(self, messages: list, trim_to):
         trim_to = int(trim_to)
         res = messages.copy()
         while True:
             if len(res) > 2:
                 res.pop(1)
-                if self.count_tokens_in_messages(res) <= trim_to:
+                if count_tokens_in_messages(res) <= trim_to:
                     return res
             else:
                 return res
@@ -62,18 +51,33 @@ class ChatGPT:
         )
         return response.data[0].url
 
-    def chat(self, prompt: str, chat_id, talking_to=None):
+    def chat(self, prompt: str, chat_id, image_data=None, talking_to=None):
         if chat_id not in self.context.keys():
             self.context[chat_id] = []
         extra = f"You are talking to {talking_to}" if talking_to else ""
 
-        messages = (
-            [{"role": "system", "content": f"{' '.join(self.perma_context)} {extra}"}]
-            + self.context[chat_id]
-            + [{"role": "user", "content": prompt}]
-        )
+        if image_data:
+            messages = (
+                [{"role": "system", "content": f"{' '.join(self.perma_context)} {extra}"}]
+                + self.context[chat_id]
+                + [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": image_data},
+                        ],
+                    }
+                ]
+            )
+        else:
+            messages = (
+                [{"role": "system", "content": f"{' '.join(self.perma_context)} {extra}"}]
+                + self.context[chat_id]
+                + [{"role": "user", "content": prompt}]
+            )
 
-        num_tokens = self.count_tokens_in_messages(messages)
+        num_tokens = count_tokens_in_messages(messages)
 
         local_max_tokens = self.max_tokens
 
@@ -81,7 +85,7 @@ class ChatGPT:
             print("!! Message too long. Trimming... !!")
             messages = self.__trim_messages(messages, 2048)
 
-            new_num_tokens = self.count_tokens_in_messages(messages)
+            new_num_tokens = count_tokens_in_messages(messages)
             print(f"Old tokens: {num_tokens}. New tokens: {new_num_tokens}")
 
             # If after trimming message is still too long, lets remove some tokens from the response to make room.
@@ -442,16 +446,39 @@ class LockwardBot:
                 return self.command_not_found
             # Handle generic messages
             return self.chat
+        elif message.content_type == "photo":
+            # TODO: See if there is a neat way of supporting multiple images.
+            return self.chat
+        return self.__do_nothing
 
     def chat(self, message: Message):
-        msg = message.text
+        if message.content_type == "photo":
+            if message.caption:
+                msg = message.caption
+            else:
+                msg = ''
+        else:
+            msg = message.text
         chat_id = message.chat.id
         username = message.from_user.username
 
         # TODO: This only lasts 5 seconds, should find a way of making it last as long as the promt completion
         self.bot.send_chat_action(chat_id=chat_id, action="typing")
         try:
-            response, usage = self.chatgpt.chat(msg, str(chat_id), message.from_user.full_name)
+            image_data = None
+            if message.content_type == "photo":
+                detail = "low"
+                if "-h" in msg or "--high" in msg:
+                    detail = "high"
+                    msg = msg.replace("--high", "").replace("-h", "").strip()
+                # Download file and ensure is jpeg!
+                file = self.bot.get_file(message.photo[-1].file_id)
+                downloaded_file = ensure_jpeg(self.bot.download_file(file.file_path))
+                base64_image = base64.b64encode(downloaded_file).decode("utf-8")
+                image_data = {"url": f"data:image/jpeg;base64,{base64_image}", "detail": detail}
+            response, usage = self.chatgpt.chat(
+                msg, str(chat_id), image_data, message.from_user.full_name
+            )
             if username not in self.token_usage.keys():
                 self.token_usage[username] = 0
             self.token_usage[username] += usage
@@ -495,6 +522,7 @@ class LockwardBot:
                 raise e
             return
         if response:
+            # If we need to generate an image!
             if response.startswith("IMAGE_REQUESTED_123"):
                 self.generate_image(
                     CustomMessage(
@@ -504,9 +532,12 @@ class LockwardBot:
                     )
                 )
             else:
+                # Otherwise send ChatGPT's response to the user!
                 try:
                     self.send_message_bot(
-                        chat_id, response.replace(".", "\."), parse_mode="MarkdownV2"
+                        chat_id,
+                        escape_markdown(response),
+                        parse_mode="MarkdownV2",
                     )
                 except Exception as e:
                     if "can't parse" in str(e):

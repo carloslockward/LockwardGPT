@@ -1,3 +1,4 @@
 openai
 pyTelegramBotAPI
 tiktoken
+Pillow
