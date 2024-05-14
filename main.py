@@ -15,7 +15,7 @@ OPENAI_API_KEY = ""
 
 class ChatGPT:
     def __init__(
-        self, api_key, model_engine="gpt-4-turbo", max_tokens=2048, context={}, context_size=4
+        self, api_key, model_engine="gpt-4o", max_tokens=2048, context={}, context_size=4
     ) -> None:
         self.max_tokens = max_tokens
         self.model_engine = model_engine
@@ -230,6 +230,7 @@ class LockwardBot:
 
     def send_message_bot(self, *args, **kwargs):
         ex = None
+        # If message fails, retry 4 more times
         for _ in range(5):
             try:
                 new_text = ""
