@@ -15,8 +15,15 @@ OPENAI_API_KEY = ""
 
 class ChatGPT:
     def __init__(
-        self, api_key, model_engine="gpt-4o", max_tokens=2048, context={}, context_size=4
+        self,
+        api_key,
+        model_engine="gpt-4o",
+        model_token_limit=16000,  # Maximum number of tokens the model can handle(Reduced to 16,000 to reduce costs)
+        max_tokens=4000,  # Maximun number of tokens in the response (Max cost per response 0.06$)
+        context={},
+        context_size=10,
     ) -> None:
+        self.model_token_limit = model_token_limit
         self.max_tokens = max_tokens
         self.model_engine = model_engine
         self.context = context
@@ -79,25 +86,26 @@ class ChatGPT:
 
         num_tokens = count_tokens_in_messages(messages)
 
-        local_max_tokens = self.max_tokens
+        max_response_tokens = self.max_tokens
+        max_context_tokens = self.model_token_limit - self.max_tokens
 
-        if num_tokens > 2048:
+        if num_tokens > max_context_tokens:
             print("!! Message too long. Trimming... !!")
-            messages = self.__trim_messages(messages, 2048)
+            messages = self.__trim_messages(messages, max_context_tokens)
 
             new_num_tokens = count_tokens_in_messages(messages)
             print(f"Old tokens: {num_tokens}. New tokens: {new_num_tokens}")
 
-            # If after trimming message is still too long, lets remove some tokens from the response to make room.
-            if new_num_tokens > 2048:
-                local_max_tokens = 4096 - new_num_tokens
-                print(f"Had to reduce response length! Max response tokens: {local_max_tokens}")
+            # If after trimming, the context + the message is still too long, lets remove some tokens from the response to make room.
+            if new_num_tokens > max_context_tokens:
+                max_response_tokens = self.model_token_limit - new_num_tokens
+                print(f"Had to reduce response length! Max response tokens: {max_response_tokens}")
 
         for _ in range(3):
             completion = self.openai_client.chat.completions.create(
                 model=self.model_engine,
                 messages=messages,
-                max_tokens=local_max_tokens,
+                max_tokens=max_response_tokens,
                 temperature=0.6,
                 frequency_penalty=0.1,
                 presence_penalty=0.1,
@@ -525,13 +533,15 @@ class LockwardBot:
         if response:
             # If we need to generate an image!
             if response.startswith("IMAGE_REQUESTED_123"):
+                image_prompt = response.replace("IMAGE_REQUESTED_123", "").strip(":").strip()
                 self.generate_image(
                     CustomMessage(
-                        response.replace("IMAGE_REQUESTED_123:", ""),
+                        image_prompt,
                         message.chat,
                         message.from_user,
                     )
                 )
+                self.send_message_bot(chat_id, f'"{image_prompt}"')
             else:
                 # Otherwise send ChatGPT's response to the user!
                 try:
@@ -587,7 +597,7 @@ if __name__ == "__main__":
                         context = json.load(cf)
                 except:
                     print(f"Failed to load context! Exception:\n {traceback.format_exc()}")
-            chatgpt = ChatGPT(OPENAI_API_KEY, context=context, context_size=10)
+            chatgpt = ChatGPT(OPENAI_API_KEY, context=context, context_size=20)
             bot = LockwardBot(chatgpt, TELEGRAM_API_KEY)
             bot.start_listening()
             print("Bot is done!")
