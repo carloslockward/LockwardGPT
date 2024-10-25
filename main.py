@@ -426,7 +426,6 @@ class LockwardBot:
             self.bot.send_chat_action(chat_id=chat_id, action="upload_voice")
             try:
                 audio_bytes = self.chatgpt.tts(msg)
-                print(f"Audio Generated! Prompt: '{msg}'")
             except Exception as e:
                 if "safety system" in str(e) or "content filters" in str(e):
                     self.send_message_bot(
@@ -583,7 +582,6 @@ class LockwardBot:
                 base64_image = base64.b64encode(downloaded_file).decode("utf-8")
                 image_data = {"url": f"data:image/jpeg;base64,{base64_image}", "detail": detail}
             elif message.content_type == "voice":
-                print(message.voice.file_id)
                 file = self.bot.get_file(message.voice.file_id)
                 mp3_voice_note = self.bot.download_file(file.file_path)
                 msg = self.chatgpt.stt(mp3_voice_note)
