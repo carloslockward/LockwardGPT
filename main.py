@@ -4,6 +4,7 @@ import openai
 import telebot
 import traceback
 from utils import *
+from io import BytesIO
 from time import sleep
 from pathlib import Path
 from openai import RateLimitError
@@ -18,6 +19,9 @@ class ChatGPT:
         self,
         api_key,
         model_engine="gpt-4o",
+        stt_engine="whisper-1",
+        tts_engine="tts-1",
+        tts_voice="alloy",
         model_token_limit=16000,  # Maximum number of tokens the model can handle(Reduced to 16,000 to reduce costs)
         max_tokens=4000,  # Maximun number of tokens in the response (Max cost per response 0.06$)
         context={},
@@ -26,11 +30,15 @@ class ChatGPT:
         self.model_token_limit = model_token_limit
         self.max_tokens = max_tokens
         self.model_engine = model_engine
+        self.stt_engine = stt_engine
+        self.tts_engine = tts_engine
+        self.tts_voice = tts_voice
         self.context = context
         self.perma_context = [
             "You are LockwardGPT, Carlos Fernandez's personal AI",
             "If asked for code you return it in markdown code block format",
-            "If asked to generate an image in any way, you will respond with 'IMAGE_REQUESTED_123' followed by the prompt. This will automatically trigger an API call to DALL-E 3, effectively allowing you to generate images directly."
+            "If asked to generate an image in any way, you will respond with 'IMAGE_REQUESTED_123' followed by the image description(omit phrases like 'generate an image of'). This will automatically trigger an API call to DALL-E 3, effectively allowing you to generate images directly."
+            "If asked to generate audio or voice note in any way, you will respond with 'VOICE_REQUESTED_123' followed by the prompt. This will automatically trigger an API call to OpenAI's audio API, effectively allowing you to generate voice messages."
             "You always try to keep your answers as short and concise as possible unless asked otherwise",
         ]
         self.context_size = context_size
@@ -57,6 +65,19 @@ class ChatGPT:
             quality="hd",
         )
         return response.data[0].url
+
+    def stt(self, audio_bytes: bytes):
+        audio_file = BytesIO(audio_bytes)
+        transcript = self.openai_client.audio.transcriptions.create(
+            model=self.stt_engine, file=("msg.mp3", audio_file)
+        )
+        return transcript.text
+
+    def tts(self, text):
+        response = self.openai_client.audio.speech.create(
+            model=self.tts_engine, voice=self.tts_voice, input=text, response_format="mp3"
+        )
+        return response.read()
 
     def chat(self, prompt: str, chat_id, image_data=None, talking_to=None):
         if chat_id not in self.context.keys():
@@ -147,6 +168,7 @@ class LockwardBot:
         self.user_path = user_path
         self.token_usage = {}
         self.image_usage = {}
+        self.voice_usage = {}
         self.commands = {
             "context": {"func": self.get_context, "desc": "Gets the current context."},
             "context_length": {
@@ -157,6 +179,10 @@ class LockwardBot:
             "image": {
                 "func": self.generate_image,
                 "desc": "Generates an image based on the user's prompt.",
+            },
+            "audio": {
+                "func": self.generate_voice,
+                "desc": "Converts a text input into a voice note",
             },
         }
 
@@ -180,6 +206,10 @@ class LockwardBot:
             "image_usage": {
                 "func": self.get_image_usage,
                 "desc": "Get general image usage by username",
+            },
+            "voice_usage": {
+                "func": self.get_voice_usage,
+                "desc": "Get general voice usage by username",
             },
         }
 
@@ -372,6 +402,71 @@ class LockwardBot:
         else:
             self.send_message_bot(chat_id, "No image usage so far...")
 
+    def get_voice_usage(self, message: Message):
+        chat_id = message.chat.id
+        if len(self.voice_usage) > 0:
+            res = "Number of voice notes generated per Username:\n"
+            for username, num_audios in sorted(
+                self.voice_usage.items(), key=lambda item: item[1], reverse=True
+            ):
+                res += f"@{username}: {num_audios}\n"
+
+            self.send_message_bot(chat_id, res.strip())
+        else:
+            self.send_message_bot(chat_id, "No audio usage so far...")
+
+    def generate_voice(self, message: Message):
+        msg = message.text
+        chat_id = message.chat.id
+        username = message.from_user.username
+
+        msg = msg.replace("/audio", "").strip()
+
+        if msg:
+            self.bot.send_chat_action(chat_id=chat_id, action="upload_voice")
+            try:
+                audio_bytes = self.chatgpt.tts(msg)
+                print(f"Audio Generated! Prompt: '{msg}'")
+            except Exception as e:
+                if "safety system" in str(e) or "content filters" in str(e):
+                    self.send_message_bot(
+                        chat_id,
+                        "This audio can't be generated because of OpenAI's safety systems.",
+                    )
+                    return
+                else:
+                    if username in self.admins:
+                        try:
+                            self.send_message_bot(
+                                chat_id,
+                                f"An error has occurred: Exception:\n```{traceback.format_exc()}```",
+                                parse_mode="Markdown",
+                            )
+                        except Exception as e:
+                            if "can't parse" in str(e):
+                                self.send_message_bot(
+                                    chat_id,
+                                    f"An error has occurred: Exception:\n```{traceback.format_exc()}```",
+                                )
+                    else:
+                        self.send_message_bot(
+                            chat_id,
+                            f"An error has occurred. Try clearing the context and try again. If the issue persists contact @carloslockward",
+                        )
+                        raise e
+
+            if audio_bytes:
+                if username not in self.voice_usage.keys():
+                    self.voice_usage[username] = 0
+                self.voice_usage[username] += 1
+                self.bot.send_voice(chat_id, audio_bytes)
+        else:
+            self.send_message_bot(
+                chat_id,
+                "You must provide a prompt\. Usage:\n `/audio <prompt>`",
+                parse_mode="MarkdownV2",
+            )
+
     def generate_image(self, message: Message):
         msg = message.text
         chat_id = message.chat.id
@@ -458,6 +553,8 @@ class LockwardBot:
         elif message.content_type == "photo":
             # TODO: See if there is a neat way of supporting multiple images.
             return self.chat
+        elif message.content_type == "voice":
+            return self.chat
         return self.__do_nothing
 
     def chat(self, message: Message):
@@ -485,9 +582,20 @@ class LockwardBot:
                 downloaded_file = ensure_jpeg(self.bot.download_file(file.file_path))
                 base64_image = base64.b64encode(downloaded_file).decode("utf-8")
                 image_data = {"url": f"data:image/jpeg;base64,{base64_image}", "detail": detail}
+            elif message.content_type == "voice":
+                print(message.voice.file_id)
+                file = self.bot.get_file(message.voice.file_id)
+                mp3_voice_note = self.bot.download_file(file.file_path)
+                msg = self.chatgpt.stt(mp3_voice_note)
+
             response, usage = self.chatgpt.chat(
                 msg, str(chat_id), image_data, message.from_user.full_name
             )
+            if message.content_type == "voice":
+                if not response.startswith("VOICE_REQUESTED_123") and not response.startswith(
+                    "IMAGE_REQUESTED_123"
+                ):
+                    response = "VOICE_REQUESTED_123: " + response
             if username not in self.token_usage.keys():
                 self.token_usage[username] = 0
             self.token_usage[username] += usage
@@ -542,6 +650,15 @@ class LockwardBot:
                     )
                 )
                 self.send_message_bot(chat_id, f'"{image_prompt}"')
+            elif response.startswith("VOICE_REQUESTED_123"):
+                audio_prompt = response.replace("VOICE_REQUESTED_123", "").strip(":").strip()
+                self.generate_voice(
+                    CustomMessage(
+                        audio_prompt,
+                        message.chat,
+                        message.from_user,
+                    )
+                )
             else:
                 # Otherwise send ChatGPT's response to the user!
                 try:
