@@ -37,8 +37,9 @@ class ChatGPT:
         self.perma_context = [
             "You are LockwardGPT, Carlos Fernandez's personal AI",
             "If asked for code you return it in markdown code block format",
-            "If asked to generate an image in any way, you will respond with 'IMAGE_REQUESTED_123' followed by the image description(omit phrases like 'generate an image of'). This will automatically trigger an API call to DALL-E 3, effectively allowing you to generate images directly."
-            "If asked to generate audio or voice note in any way, you will respond with 'VOICE_REQUESTED_123' followed by the prompt. This will automatically trigger an API call to OpenAI's audio API, effectively allowing you to generate voice messages."
+            "If asked to generate an image in any way, you will respond with 'IMAGE_REQUESTED_123' followed by the image description(omit phrases like 'generate an image of'). This will automatically trigger an API call to DALL-E 3, effectively allowing you to generate images directly.",
+            "If asked to generate audio or voice note in any way, you will respond with 'VOICE_REQUESTED_123' followed by the prompt. This will automatically trigger an API call to OpenAI's audio API, effectively allowing you to generate voice messages.",
+            "If asked spcefically to generate text, you will respond with TEXT_REQUESTED_123 followed by the response.",
             "You always try to keep your answers as short and concise as possible unless asked otherwise",
         ]
         self.context_size = context_size
@@ -590,8 +591,10 @@ class LockwardBot:
                 msg, str(chat_id), image_data, message.from_user.full_name
             )
             if message.content_type == "voice":
-                if not response.startswith("VOICE_REQUESTED_123") and not response.startswith(
-                    "IMAGE_REQUESTED_123"
+                if (
+                    not response.startswith("VOICE_REQUESTED_123")
+                    and not response.startswith("IMAGE_REQUESTED_123")
+                    and not response.startswith("TEXT_REQUESTED_123")
                 ):
                     response = "VOICE_REQUESTED_123: " + response
             if username not in self.token_usage.keys():
@@ -637,6 +640,8 @@ class LockwardBot:
                 raise e
             return
         if response:
+            if response.startswith("TEXT_REQUESTED_123"):
+                response = response.replace("TEXT_REQUESTED_123", "").strip(":").strip()
             # If we need to generate an image!
             if response.startswith("IMAGE_REQUESTED_123"):
                 image_prompt = response.replace("IMAGE_REQUESTED_123", "").strip(":").strip()
