@@ -18,9 +18,9 @@ class ChatGPT:
     def __init__(
         self,
         api_key,
-        model_engine="gpt-4o",
+        model_engine="gpt-4.1",
         stt_engine="whisper-1",
-        tts_engine="tts-1",
+        tts_engine="gpt-4o-mini-tts",
         tts_voice="alloy",
         model_token_limit=16000,  # Maximum number of tokens the model can handle(Reduced to 16,000 to reduce costs)
         max_tokens=4000,  # Maximun number of tokens in the response (Max cost per response 0.06$)
@@ -39,7 +39,7 @@ class ChatGPT:
             "If asked for code you return it in markdown code block format",
             "If asked to generate an image in any way, you will respond with 'IMAGE_REQUESTED_123' followed by the image description(omit phrases like 'generate an image of'). This will automatically trigger an API call to DALL-E 3, effectively allowing you to generate images directly.",
             "If asked to generate audio or voice note in any way, you will respond with 'VOICE_REQUESTED_123' followed by the prompt. This will automatically trigger an API call to OpenAI's audio API, effectively allowing you to generate voice messages.",
-            "If asked spcefically to generate text, you will respond with TEXT_REQUESTED_123 followed by the response.",
+            "If asked spcefically to respond with text, you will respond with TEXT_REQUESTED_123 followed by the response.",
             "You always try to keep your answers as short and concise as possible unless asked otherwise",
         ]
         self.context_size = context_size
