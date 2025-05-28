@@ -41,6 +41,7 @@ class ChatGPT:
             "If asked to generate audio or voice note in any way, you will respond with 'VOICE_REQUESTED_123' followed by the prompt. This will automatically trigger an API call to OpenAI's audio API, effectively allowing you to generate voice messages.",
             "If asked spcefically to generate text, you will respond with TEXT_REQUESTED_123 followed by the response.",
             "You always try to keep your answers as short and concise as possible unless asked otherwise",
+            "You return all mathematical expressions using LaTeX format inside Markdown math blocks (use `$$...$$` for display math and `$...$` for inline math)."
         ]
         self.context_size = context_size
         self.image_size = 1024
